@@ -1,0 +1,14 @@
+
+&input
+   maxstep=200000
+   mint=10
+   dt=0.09675
+   nspt=2
+   nsp(1)=64
+   nsp(2)=127
+   aindex=1
+   posfile='h2o-64.pos'
+   celfile='h2o-64.cel'
+   outfile='get_diff.out3'
+   OHbond=1.19
+/

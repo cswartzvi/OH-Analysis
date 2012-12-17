@@ -1,0 +1,455 @@
+!==================================================================================================
+!
+!
+!
+!atom1 = H' or O*
+!atom2 = Hw or Ow
+!OHbond = O-H bond length
+!
+!
+!
+!==================================================================================================
+ PROGRAM new_rdf
+   !
+   USE rdf_lib
+   USE omp_lib
+   !
+   implicit none
+   !
+   integer, parameter   :: namax = 20                 !max number of species   
+   real(DP), parameter  :: pi    = 4.d0*datan(1.d0),& !Pi
+                           ao    = 0.52917720859_DP
+   !
+   integer              :: binNum,     &  !number of bins for g(r)
+                           ntsp,       &  !number of total atomic species, limit namax
+                           nsp(namax), &  !number of each atomic species     
+                           nat=0,      &  !total number of atoms
+                           mic,        &  !Multiple Supercells 
+                                             !  mic = 1, Only the main supercell
+                                             !  mic = 2, translated in the pos direction
+                                             !  mic = 3, translated in both the pos and neg directions
+                                             !  Also, scaled length of region
+                           mic3,          &  !number of extended cells, mic**3 (line )
+                           stepstart,     &  !nfi that we will start reading *.pos 
+                           stepstop,      &  !nfi that we will stop reading *.pos AFTER (optional)
+                           interval,      &  !interval between nfi in *pos file
+                           nsteps,        &  !total number of steps
+                           ncount=0,      &  !number of steps index
+                           i, j, k,       &  !general indexes
+                           offsetI,       &  !initial offset
+                           offsetF,       &  !final offset
+                           atom1,         &  !first atom type (IMPORTANT: atom1 with always be the O* or the H'
+                                             !  See Tuckerman Acc. Chem. Res.
+                                             !  2006, 39, pg 151-158 for more
+                                             !  information
+                           atom2,         &  !first atom type
+                           n,             &  !general index (extended supercell)
+                           m,             &  !secondary general index
+                           ns,            &  !number of species index
+                           na,            &  !number of atoms index
+                           readstep,      &  !read the nfi from *.pos 
+                           ierror,        &  !error index
+                           nbin,          &  !bin index
+                           pcount_end,    &  !first limit used in the pair counting process
+                           pcount_start,  &  !second limit used in the pair counting process
+                           Ostar=0,       &  !O* of OH^- See Tuckerman
+                           Hprime=0,      &  !H' of OH^- See Tuckerman
+                           prevOstar,     &  !O* from previous configuration with only ONE OH-
+                           prevHprime,    &  !H' from previous configuration with only ONE OH-
+                           Ocount,        &  !O counter
+                           Hcheck,        &  !double H check, this is to make
+                                             !  sure that we are not counting 2
+                                             !  OHminus atoms 
+                           dblOH=0,       &  !counter for configurations with TWO OH^-
+                           noOH=0,        &  !counter for configurations with NO OH^- 
+                           H1,            &  !H1 counter
+                           H2                !H2 counter
+                           
+   !
+   real(DP), allocatable    :: tau(:,:,:),    &  !atomic positions (dim, index, atomic-species)
+                               stau(:,:,:),   &  !scaled atomic positions (dim,index, atomic-species)
+                               staux(:,:,:),  &  !multiple scaled atomic positions (dim, index, atomic-species)
+                               ngdr(:),       &  !main pair correlation (unnormalized g(r)) array
+                               ngdrt(:)          !Temp pair correlation (unnormalized g(r)) array
+   !
+   real(DP)             :: gofr,          &  !FINAL g(r) print-out variable (not an array, print-out values)  
+                           r,             &  !total distance (not an array, print-out value)
+                           aprim(3,3),    &  !lattice prim vectors
+                           apinv(3,3),    &  !inverse of prim vectors, for scaled positions
+                           box,           &  !length of the region (includes multiple supercells)
+                           Hbox,          &  !length of half the region (including multiple supercells)
+                                             ! Recall: we can only compute up to
+                                             ! L/2 of the total region, which is
+                                             ! why we need multiple super cells
+                           res,           &  !resolution (size) of bins  binNum/Hbox (number/length)
+                           omega,         &  !volume of cell
+                           omegaT=0.0,    &  !total volume of the cell
+                           dens,          &  !raw particle density
+                           dx,            &  !diff in x-value
+                           dy,            &  !diff in y-value
+                           dz,            &  !diff in z-value
+                           sdist(3),      &  !square of the components distance in scaled coordinates
+                           rdist(3),      &  !square of the components distance in real coordinates
+                           r2,            &  !total squared distance
+                           norm=1.0,      &  !normalizing factor (used to normalize final g(r), if there are multiple atoms  
+                           time,          &  !timestep
+                           dmic,          &  !convert mic to real
+                           vshell,        &  !volume of the infinitesimal radial shell
+                           OHbond,        &  !OHbond distance (in Angstrom!!)
+                           dummy             !a dummy variable
+
+   character(len=30)       :: filePos, fileCel, fileOut
+   logical                 :: OHskip, OHfound, multiOH
+   integer                 :: start_time, end_time, total_time
+   !
+   namelist /rdfinput/ filePos, fileCel, fileOut, binNum, ntsp, nsp, mic, &
+                 & stepstart, stepstop, atom1, atom2, norm, OHbond, OHskip   
+   !
+   !
+   !Start Time
+   !$ start_time = OMP_get_wtime()   
+   !
+   !Read in parameters from standard input
+   !
+ 
+   read(*, nml=rdfinput)
+   !
+   !
+   !******************************************************************
+   !Housekeeping (to be moved to a subroutine)
+   !******************************************************************
+   !Total number of atoms
+   do ns=1,ntsp
+      nat = nat + nsp(ns)
+   enddo
+   !
+   !Check for multiple Supercells
+   select case (mic)
+      case(1)
+         offsetI = 0
+         offsetF = 0
+      case default
+         write(*,*) 'ERROR: incorrect mic!! Only mic=1 supported!'
+         stop
+   end select
+   mic3 = mic**3
+   !
+   !Allocate variables 
+   allocate( tau(3,(mic**3*nat),ntsp)    )  
+   allocate( stau(3,(mic**3*nat),ntsp)   )
+   allocate( staux(3,(mic**3*nat),ntsp)  )
+   allocate( ngdr(binNum), ngdrt(binNum) )
+   !---------------------------------------------
+   !
+   !
+   !---------------------------------------------
+   !I/O
+   !---------------------------------------------
+   !Open Files
+   open(unit=1, file=(trim(filePos)), status='old')
+   open(unit=2, file=(trim(fileCel)), status='old')
+   open(unit=3, file=(trim(fileOut)), status='unknown')
+   !******************************************************************
+   !
+   !
+   !******************************************************************
+   Main_loop: do 
+      !
+      !-----read *.pos file-----
+      read(1,*, iostat=ierror) readstep, time
+      !
+      !-----Check for end of *.pos file-----
+      if (ierror < 0) then
+         write(*,*) 'End of File Reached'
+         write(*,*) 'Total number of Steps: ', ncount
+         exit
+      endif
+      !
+      !----Check for start condition------
+      if (readstep < stepstart) then
+         cycle
+      endif
+      !
+      !-----read *cel file------
+      read(2, *) dummy, dummy
+      do i=1,3,1
+         read(2, *) (aprim(i,j),j=1,3)
+      enddo
+      !
+      !calculate the inverse
+      call invert(aprim, apinv, omega)
+      omegaT = omegaT + omega
+      !
+      !region dimensions for THIS loop
+      box  = mic*omega**(1./3.)
+      Hbox = box/2.
+      res  = binNum/Hbox
+      !
+      !Read in current position values
+      do ns=1,ntsp,1
+         do na=1,nsp(ns),1
+            read(1,*) (tau(j,na,ns),j=1,3)   
+         enddo
+      enddo
+      !
+      !Convert to scaled positions 
+      do ns=1,ntsp,1
+         do na=1,nsp(ns),1
+            call r_to_s( tau(1:3,na,ns), stau(1:3,na,ns), apinv )
+         enddo
+      enddo
+      !
+      !Zero all temp g(r)
+      do n=1,binNum,1
+         ngdrt(n) = 0
+      enddo
+      !
+      !ADD OPTIONAL PERIODIC
+      !
+      !Extended Multiple supercell !!!!! NOT IMPLEMENTED
+      do ns=1,ntsp,1
+         n=0
+         do i=offsetI,offsetF
+            do j=offsetI,offsetF
+               do k=offsetI,offsetF
+                  do na=1,nsp(ns),1
+                  n = n +1
+                  staux(1,n,ns) = stau(1,na,ns) + i
+                  staux(2,n,ns) = stau(2,na,ns) + j
+                  staux(3,n,ns) = stau(3,na,ns) + k
+                  enddo
+               enddo
+            enddo
+         enddo
+      enddo
+      !
+      !
+      !---------Find OH--------------
+      !  fort.45 is the OH tagging processing
+      !  fort.36 tagged OH list
+      write(45,*) 'Configuration :' , (ncount+1), readstep
+      Hcheck = 0 
+      Ostar = 0
+      Hprime = 0
+      OHfound = .false.
+      multiOH = .false.
+      Oloop: do i=1,nsp(1),1
+         !Hydrogen counters
+         H1 = 0
+         H2 = 0
+         !
+         Hloop: do j=1,nsp(2),1
+            !
+            dx = staux(1,i,1) - staux(1,j,2)
+            dy = staux(2,i,1) - staux(2,j,2)
+            dz = staux(3,i,1) - staux(3,j,2)      
+            !
+            !Periodic adjusted distance
+            sdist(1) = dx - NINT( dx/(real(mic)) ) * real(mic)
+            sdist(2) = dy - NINT( dy/(real(mic)) ) * real(mic)
+            sdist(3) = dz - NINT( dz/(real(mic)) ) * real(mic)
+            !
+            !convert from scaled to real
+            call s_to_r( sdist, rdist, aprim )
+            r2 = rdist(1)**2 + rdist(2)**2 + rdist(3)**2
+            !
+            !Check for a O-H
+            if (r2 < (OHbond/ao)**2 ) then
+               !How many Hydrogen bonds are already assocated with the O
+               if ( (H1==0) .and. (H2==0) ) then
+                  H1 = j
+                  write(45,*) 'Hydrogen1 ', i, j, ' ', (sqrt(r2)*ao)
+               else
+                  H2 = j
+                  write(45,*) 'Hydrogen2 ', i, j, ' ', (sqrt(r2)*ao)
+               endif
+            endif
+            !
+         enddo Hloop
+         !
+         !Check for a singular OH
+         if (H2 == 0 ) then
+            !
+            write (45, *) 'OH found!!!' 
+            Ostar = i
+            Hprime = H1
+            OHfound = .true.
+            !
+            !Multiple OH^- check
+            Hcheck = Hcheck + 1
+            !
+         endif
+         !
+      enddo Oloop
+      !
+      !Check the number of the OH present
+      if ( Hcheck == 0 ) then
+         !
+         write(36,*) (ncount+1), 'OH not found'
+         noOH = noOH + 1
+         !
+         !If no OH found, set O* and H' to the previous, OHskip if NOT set true
+         if (.not. OHskip) then
+            if (prevOstar /= 0 .and. prevHprime /= 0) then
+               Ostar = prevOstar
+               Hprime = prevHprime
+            else
+               print *, 'ERROR: No previous O* and H'' for configuration ', (ncount+1) 
+               stop
+            endif
+         endif
+         !
+      !Only one OH 
+      elseif (Hcheck == 1) then
+         !reset the previous OH to this configuration
+         prevOstar = i
+         prevHprime = H1
+         write (36, *) (ncount+1), 'Ostar : ', Ostar, 'Hprime : ', Hprime
+      !
+      !Two OH
+      elseif ( Hcheck == 2 )  then
+         !If there are two OH in the configuration, use the previous 
+         !print *, 'WARRINNG: There are two OH- in configuration', (ncount+1)
+         write (36, *) (ncount+1), 'Ostar : ', Ostar, 'Hprime : ', Hprime, ' (PT in progress) '
+         Ostar = prevOstar
+         Hprime = prevHprime
+         dblOH = dblOH + 1
+         multiOH = .true.
+         !
+         !More then two OH, NOT GOOD!
+      elseif ( Hcheck > 2 ) then
+         !If three OH are found, kill execution
+         print *, 'ERROR: There are THREE or more OH- in configuration', (ncount+1), '!'
+         multiOH = .true.  
+         Ostar = prevOstar
+         Hprime = prevHprime
+         !stop
+      endif
+      !
+      !
+      !---------Count PAIRS-----------
+      !Index atoms to be used in the pair correlation
+      !NOTE: atom1 is always either O* or H', atom2 are the other atoms Ow, Hw    
+      if (atom1 == 1 ) then                                    
+         n = Ostar
+      elseif (atom1 == 2 ) then
+         n = Hprime
+      else
+         Write(*,*) 'ERROR: atom1 is defined incorrectly!!!'
+         stop
+      endif
+      !
+      !
+      if (OHfound)  then
+      
+         if ( (OHskip .and. .not.multiOH) .or. (.not. OHskip) ) then
+            !print *, 'come on son...'
+            !
+            !Print out absolute index of O* and H'
+            write(99,*) readstep, Ostar, Hprime
+            !
+            !! $OMP PARALLEL PRIVATE(dx, dy, dz, sdist, rdist, r2, nbin)
+            !! $OMP DO 
+            do m=1,nsp(atom2),1
+               !
+               !Skip this cylce if atom2 is Ow and the current atom is the O*
+               if ( (atom2 ==1) .and. (m == Ostar) ) cycle
+               !coordinate distance
+               dx = staux(1,n,atom1) - staux(1,m,atom2)
+               dy = staux(2,n,atom1) - staux(2,m,atom2)
+               dz = staux(3,n,atom1) - staux(3,m,atom2)
+               !
+               !Periodic adjusted distance
+               sdist(1) = dx - NINT( dx/(real(mic)) ) * real(mic)
+               sdist(2) = dy - NINT( dy/(real(mic)) ) * real(mic)
+               sdist(3) = dz - NINT( dz/(real(mic)) ) * real(mic)
+               !
+               !convert from scaled to real
+               call s_to_r( sdist, rdist, aprim )
+               r2 = rdist(1)**2 + rdist(2)**2 + rdist(3)**2
+               !
+               !establish which bin this distance is in
+               nbin = nint(sqrt(r2)*res)
+               !
+               !if we are at the end of binNum
+               if (nbin > binNum) nbin = binNum
+               !
+               !update the temp g(r)
+               !! $OMP CRITICAL
+               ngdrt(nbin) = ngdrt(nbin) + 1 
+               !! $OMP END CRITICAL 
+            enddo
+            !!$OMP BARRIER
+            !! $OMP END PARALLEL
+         endif
+      endif
+      !
+      !update true unnormalized, raw pair correlation
+      do n=1,binNum,1
+         ngdr(n) = ngdr(n) + ngdrt(n)
+      enddo
+      !
+      !-----Check for stop condition in *.pos file-------
+      if(readstep == stepstop) then
+         write(*,*) 'Final step reached : ', stepstop
+         write(*,*) 'Total number of steps: ', ncount
+         exit
+      endif
+      !
+      ncount = ncount + 1
+      !
+   enddo Main_loop
+   !
+   close(1)
+   close(2)
+   !******************************************************************
+  
+   Write(*,*) 'Total number of configurations with TWO OHminus: ', dblOH
+   write(*,*) 'Total number of configurations with NO OHminus:  ', noOH
+   write(*,*) 'SKipping the Non-OH configurations: ', OHskip
+   write(*,*) 'omega1 : ', omega
+
+
+   !Total region dimensions, averaged over all loops (it should be the same as
+   ! individual loop region dimensions if the *.cel file is constant)
+   omega = omegaT/real(ncount)
+   box = mic*omega**(1./3.)
+   Hbox = box/2.0
+   res = binNum/ Hbox
+   !
+   write(*,*) 'omega22 : ', omega 
+   !
+   do n=1,(binNum-1),1
+      !
+      !construct some details of normalization and distance  
+      r = real(n)/res
+      r2 = r**2
+      vshell = 4.0 * pi * r2 / res
+      !if(atom1 /= atom2) then
+      !   dens = real(nsp(atom2))/omega
+      !else
+      !   dens = real(nsp(atom2) - 1)/omega
+      !endif
+      dens = real(nsp(atom2) +1)/omega
+      !
+      !Calculate the final, normalized, value of g(r)! Please note that the
+      !normalization constant (ncount*mic3*norm*nsp(atom1)*dens*vshell)...
+      !  ncount*mic3 = number of steps and number of extended shells
+      !  norm = external normalization constant (default is 1.0)
+      !  nsp(atom1)*dens = number of pairs
+      !  vshell = volume of the infinitesimal shell
+      gofr = ngdr(n)/ &     
+      &( real(ncount*mic3*norm*dens*vshell) )
+
+      write(3,*) (r*ao), gofr
+   enddo
+
+
+   !$ end_time = OMP_get_wtime()
+   !$ total_time  = end_time - start_time
+   !$ write(*,'(A, I5, A)') 'Total Computing Time: ', total_time, ' s'
+
+
+
+
+ END PROGRAM new_rdf

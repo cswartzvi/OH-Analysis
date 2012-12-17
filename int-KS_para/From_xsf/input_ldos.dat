@@ -1,0 +1,18 @@
+&inputpp
+   nbnd     =  256,
+   radius   =  1.2,
+   dE       =  0.01,
+   degauss  =  0.09524,
+   E_start  =  -30.0,
+   E_stop   =  0.0
+/
+#
+&inputpp
+   nbnd     =  256, 
+   radius   =  1.5,
+   dE       =  0.01, 
+   degauss  =  0.09524,
+   E_start  =  -30.0 
+   E_stop   =  0.0
+   shared_proton = SHARE!! 
+/

@@ -1,0 +1,17 @@
+&rdfinput
+   atom1       =  2, 
+   atom2       =  1,
+   filePos     =  'h2o-64.pos',
+   fileCel     =  'h2o-64.cel',
+   fileOut     =  'gHprimeOw.dat',
+   ntsp        =  2,
+   nsp(1)      =  64,  
+   nsp(2)      =  127,
+   stepstart   =  200,
+   stepstop    =  212350,
+   binNum      =  60,
+   norm        =  1.0,
+   mic         =  1,
+   OHbond      =  1.19,
+   OHskip      = .true.
+/
