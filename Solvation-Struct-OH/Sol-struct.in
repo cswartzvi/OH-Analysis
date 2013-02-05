@@ -1,0 +1,22 @@
+&system
+   filePos     =  'h2o-64.pos',
+   fileCel     =  'h2o-64.cel',
+   ntsp        =  2,
+   nsp(1)      =  64,
+   nsp(2)      =  127,
+   stepstart   =  50000
+   rdefect     =  1.1655
+   calc_delta  = .true.
+   calc_rdf    = .true.
+/
+
+&hbonds
+   Hbond_cut   =  3.2
+   Hbond_angle = 140.0
+/
+
+&rdf
+   atom1 = 1
+   atom2 = 1
+   binNum = 100
+/
