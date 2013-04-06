@@ -1,8 +1,8 @@
 CC=
 CFLAGS= 
-F90=pgf90
+F90=gfortran
 F90FLAGS=-O3  
-PARAFLAGS=-mp
+PARAFLAGS=-fopenmp
 
 SOURCES=  rdf_lib.f90 main.f90 
 

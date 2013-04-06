@@ -1,6 +1,6 @@
 CC=gcc
 CFLAGS= 
-F90=ftn -mp
+F90=mpif90
 #F90FLAGS=-g -traceback -Mbounds
 F90FLAGS=
 PARAFLAGS=
